@@ -18,16 +18,20 @@ env:
 
 jobs:
   #
-  #  Read build.env and work out the tag.  When pushing, stop here if the
-  #  tag is already on Docker Hub: Koitohan pins the tag without a digest,
-  #  so a published tag must keep pointing at the same image.
+  #  Read build.env and work out the tag.  The version in the tag is the
+  #  one the server reports (`freeradius -v`), which upstream derives from
+  #  the commit, so it is taken from the upstream tree rather than written
+  #  down by hand.  When pushing, stop here if the tag is already on Docker
+  #  Hub: Koitohan pins the tag without a digest, so a published tag must
+  #  keep pointing at the same image.
   #
   config:
     runs-on: ubuntu-24.04
     outputs:
       ref: ${{ steps.cfg.outputs.ref }}
       dist: ${{ steps.cfg.outputs.dist }}
-      tag: ${{ steps.cfg.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v6
 
@@ -39,17 +43,46 @@ jobs:
             echo "UPSTREAM_REF must be a full 40-hex commit SHA" >&2
             exit 1
           fi
-          tag="${VERSION}-${DIST}-$(printf '%s' "$UPSTREAM_REF" | cut -c1-7)-r${BUILD}"
           echo "ref=$UPSTREAM_REF" >> "$GITHUB_OUTPUT"
           echo "dist=$DIST" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+
+      #  version.sh counts the commits since the tag branch_4_0_0, so it
+      #  needs the whole history and the tags.
+      - name: Check out FreeRADIUS
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ steps.cfg.outputs.ref }}
+          path: src
+          fetch-depth: 0
+          fetch-tags: true
+
+      #  "devel" marks a developer build.  Drop it from the tag if the
+      #  images are ever built with --disable-developer.
+      - id: tag
+        name: Work out the tag
+        working-directory: src
+        env:
+          REF: ${{ steps.cfg.outputs.ref }}
+          DIST: ${{ steps.cfg.outputs.dist }}
+          BUILD: ${{ steps.cfg.outputs.build }}
+        run: |
+          version="$(./version.sh major . minor . commit_depth)"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Unexpected version from version.sh: '$version'" >&2
+            exit 1
+          fi
+          tag="${version}-devel-${DIST}-$(printf '%s' "$REF" | cut -c1-7)-r${BUILD}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Tag: $IMAGE:$tag" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Refuse to overwrite a published tag
         if: inputs.push
         run: |
-          if docker buildx imagetools inspect "$IMAGE:${{ steps.cfg.outputs.tag }}" > /dev/null 2>&1; then
-            echo "$IMAGE:${{ steps.cfg.outputs.tag }} already exists. Raise BUILD in build.env." >&2
+          if docker buildx imagetools inspect "$IMAGE:${{ steps.tag.outputs.tag }}" > /dev/null 2>&1; then
+            echo "$IMAGE:${{ steps.tag.outputs.tag }} already exists. Raise BUILD in build.env." >&2
             exit 1
           fi
 
@@ -58,6 +91,9 @@ jobs:
   #  and push it by digest.  The merge job gives the digests a tag.
   #
   build:
+    #  Show the architecture only.  The runner's own Ubuntu version is not
+    #  the image's: the base image comes from the upstream Dockerfile.
+    name: build (${{ matrix.arch }})
     needs: config
     strategy:
       fail-fast: false
@@ -70,6 +106,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       REF: ${{ needs.config.outputs.ref }}
+      VERSION: ${{ needs.config.outputs.version }}
       DOCKERFILE: src/scripts/docker/build/${{ needs.config.outputs.dist }}/Dockerfile.service
       LABELS: |
         org.opencontainers.image.title=freeradius-server
@@ -80,9 +117,8 @@ jobs:
         org.opencontainers.image.licenses=GPL-2.0-or-later
     steps:
       #
-      #  The whole history and the tags are needed: version.sh derives the
-      #  version (4.0.<commits since branch_4_0_0>) from `git describe`, and
-      #  the Dockerfile runs git inside the build context.
+      #  The whole history and the tags are needed here too: the build runs
+      #  version.sh, and the Dockerfile runs git inside the build context.
       #
       - name: Check out FreeRADIUS
         uses: actions/checkout@v6
@@ -108,7 +144,7 @@ jobs:
         run: |
           test "$(docker image inspect --format '{{.Architecture}}' freeradius-server:test)" = "${{ matrix.arch }}"
           docker run --rm freeradius-server:test -v | tee version.txt
-          grep -q "git #$(printf '%s' "$REF" | cut -c1-8)" version.txt
+          grep -qF "version $VERSION (git #$(printf '%s' "$REF" | cut -c1-8))" version.txt
           docker run --rm freeradius-server:test -XC > config-check.log 2>&1 || { cat config-check.log; exit 1; }
           tail -n 1 config-check.log
 
@@ -147,6 +183,7 @@ jobs:
           retention-days: 1
 
   merge:
+    name: tag the multi-arch image
     if: inputs.push
     needs: [config, build]
     runs-on: ubuntu-24.04
