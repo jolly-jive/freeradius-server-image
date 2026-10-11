@@ -7,15 +7,18 @@ This repository holds no FreeRADIUS code. It pins an upstream commit and builds 
 ## Tags
 
 ```
-4.0.0-devel-ubuntu26-14fdfb3-r1
-│           │        │       └ build number (rebuilds of the same commit)
-│           │        └ upstream commit (first 7 hex digits)
-│           └ base distribution
-└ version prefix
+4.0.40537-devel-ubuntu26-14fdfb3-r1
+│         │     │        │       └ build number (rebuilds of the same commit)
+│         │     │        └ upstream commit (first 7 hex digits)
+│         │     └ base distribution
+│         └ developer build
+└ version, as printed by `freeradius -v`
 ```
 
+The third number of the version is the number of commits since the upstream tag `branch_4_0_0`, so a larger number is a newer commit on the development branch.
+
 - A published tag is never overwritten. A rebuild of the same commit picks up newer base image and distribution packages, so it gets a new build number.
-- Tags without an `-rN` suffix, and `latest`, predate this repository and are `linux/arm64` only.
+- Tags that start with `4.0.0-devel-`, and `latest`, predate this scheme. Do not use them.
 - The images are developer builds: `freeradius -v` prints `DEVELOPER BUILD`.
 
 The full upstream commit is in the `org.opencontainers.image.revision` label:
