@@ -91,6 +91,9 @@ jobs:
   #  and push it by digest.  The merge job gives the digests a tag.
   #
   build:
+    #  Show the architecture only.  The runner's own Ubuntu version is not
+    #  the image's: the base image comes from the upstream Dockerfile.
+    name: build (${{ matrix.arch }})
     needs: config
     strategy:
       fail-fast: false
@@ -180,6 +183,7 @@ jobs:
           retention-days: 1
 
   merge:
+    name: tag the multi-arch image
     if: inputs.push
     needs: [config, build]
     runs-on: ubuntu-24.04
