@@ -1,0 +1,178 @@
+name: Build and push
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      push:
+        description: Push the image to Docker Hub
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: cayenneryo/freeradius-server
+  UPSTREAM_REPO: FreeRADIUS/freeradius-server
+
+jobs:
+  #
+  #  Read build.env and work out the tag.  When pushing, stop here if the
+  #  tag is already on Docker Hub: Koitohan pins the tag without a digest,
+  #  so a published tag must keep pointing at the same image.
+  #
+  config:
+    runs-on: ubuntu-24.04
+    outputs:
+      ref: ${{ steps.cfg.outputs.ref }}
+      dist: ${{ steps.cfg.outputs.dist }}
+      tag: ${{ steps.cfg.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - id: cfg
+        name: Read build.env
+        run: |
+          . ./build.env
+          if ! printf '%s' "$UPSTREAM_REF" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "UPSTREAM_REF must be a full 40-hex commit SHA" >&2
+            exit 1
+          fi
+          tag="${VERSION}-${DIST}-$(printf '%s' "$UPSTREAM_REF" | cut -c1-7)-r${BUILD}"
+          echo "ref=$UPSTREAM_REF" >> "$GITHUB_OUTPUT"
+          echo "dist=$DIST" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Tag: $IMAGE:$tag" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Refuse to overwrite a published tag
+        if: inputs.push
+        run: |
+          if docker buildx imagetools inspect "$IMAGE:${{ steps.cfg.outputs.tag }}" > /dev/null 2>&1; then
+            echo "$IMAGE:${{ steps.cfg.outputs.tag }} already exists. Raise BUILD in build.env." >&2
+            exit 1
+          fi
+
+  #
+  #  Build each architecture on a native runner (no QEMU), test the image,
+  #  and push it by digest.  The merge job gives the digests a tag.
+  #
+  build:
+    needs: config
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      REF: ${{ needs.config.outputs.ref }}
+      DOCKERFILE: src/scripts/docker/build/${{ needs.config.outputs.dist }}/Dockerfile.service
+      LABELS: |
+        org.opencontainers.image.title=freeradius-server
+        org.opencontainers.image.description=Unofficial build of FreeRADIUS v4 (development branch)
+        org.opencontainers.image.version=${{ needs.config.outputs.tag }}
+        org.opencontainers.image.source=https://github.com/${{ github.repository }}
+        org.opencontainers.image.revision=${{ needs.config.outputs.ref }}
+        org.opencontainers.image.licenses=GPL-2.0-or-later
+    steps:
+      #
+      #  The whole history and the tags are needed: version.sh derives the
+      #  version (4.0.<commits since branch_4_0_0>) from `git describe`, and
+      #  the Dockerfile runs git inside the build context.
+      #
+      - name: Check out FreeRADIUS
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ env.REF }}
+          path: src
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: src
+          file: ${{ env.DOCKERFILE }}
+          labels: ${{ env.LABELS }}
+          tags: freeradius-server:test
+          load: true
+
+      - name: Test
+        run: |
+          test "$(docker image inspect --format '{{.Architecture}}' freeradius-server:test)" = "${{ matrix.arch }}"
+          docker run --rm freeradius-server:test -v | tee version.txt
+          grep -q "git #$(printf '%s' "$REF" | cut -c1-8)" version.txt
+          docker run --rm freeradius-server:test -XC > config-check.log 2>&1 || { cat config-check.log; exit 1; }
+          tail -n 1 config-check.log
+
+      - name: Log in to Docker Hub
+        if: inputs.push
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      #  Same build as above, so this only uploads the cached result.
+      - name: Push by digest
+        if: inputs.push
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: src
+          file: ${{ env.DOCKERFILE }}
+          labels: ${{ env.LABELS }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        if: inputs.push
+        run: |
+          mkdir -p digests
+          digest="${{ steps.push.outputs.digest }}"
+          touch "digests/${digest#sha256:}"
+
+      - name: Upload digest
+        if: inputs.push
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    if: inputs.push
+    needs: [config, build]
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ needs.config.outputs.tag }}
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create the multi-arch tag
+        working-directory: digests
+        run: |
+          docker buildx imagetools create -t "$IMAGE:$TAG" $(printf "$IMAGE@sha256:%s " *)
+
+      - name: Inspect
+        run: |
+          docker buildx imagetools inspect "$IMAGE:$TAG" | tee -a "$GITHUB_STEP_SUMMARY"
