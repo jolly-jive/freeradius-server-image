@@ -19,7 +19,7 @@ FreeRADIUS v4(開発ブランチ)の Docker イメージを `linux/amd64` と `l
 
 - **公開済みのタグは上書きしない。** Koitohan が digest なしで固定しているため。同じコミットをビルドし直すときは `BUILD` を上げる。`config` ジョブの存在チェックを外さないこと。
 - **上流の checkout は `fetch-depth: 0` と `fetch-tags: true` のままにする。** `version.sh` が `git describe`(タグ `branch_4_0_0` からのコミット数)でバージョンを決めるため、浅いクローンだとバージョン番号が変わる。Dockerfile もビルドコンテキスト内で `git clean` / `git reset` を実行するので `.git` が必要。
-- `4.0.0-devel-` で始まるタグと `latest` は、今の命名にする前のもの。`4.0.0-devel-ubuntu26-14fdfb3` と `latest` は手で push した arm64 のみのイメージ、`4.0.0-devel-ubuntu26-14fdfb3-r1` はワークフローの初回の push(マルチアーキ)。ワークフローからは触らない。
+- `4.0.0-devel-` で始まるタグと `latest` は、今の命名にする前のもの。`4.0.0-devel-ubuntu26-14fdfb3` と `latest` は手で push した arm64 のみのイメージ。ワークフローからは触らない。
 - 開発ビルド(`DEVELOPER BUILD`)のまま出している。`--disable-developer` への切り替えは未着手で、行うときは Dockerfile を上流のまま使う方針との兼ね合いを先に決める。
 
 ## 確認済みの事実(コミット `14fdfb3`、arm64)
