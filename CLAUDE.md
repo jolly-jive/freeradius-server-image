@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 FreeRADIUS v4(開発ブランチ)の Docker イメージを `linux/amd64` と `linux/arm64` でビルドし、Docker Hub の `cayenneryo/freeradius-server` へ push するためのリポジトリ。FreeRADIUS のコードは持たない。中身は、ビルド対象を固定する `build.env`、GitHub Actions のワークフロー、README のみ。
 
-利用者は Koitohan(`jolly-jive/Koitohan`、このホストでは `/srv/docker`)。Koitohan は `compose.yaml` でタグだけを固定し、digest は付けない。
+利用者は Koitohan(`jolly-jive/Koitohan`、このホストでは `/srv/docker`)。Koitohan は `freeradius/build/Dockerfile` の `FROM` でタグだけを固定し、digest は付けない。
 
 ## 仕組み
 
